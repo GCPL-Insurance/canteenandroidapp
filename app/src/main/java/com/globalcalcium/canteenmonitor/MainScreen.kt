@@ -1,5 +1,6 @@
 package com.globalcalcium.canteenmonitor.ui
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,11 +16,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.globalcalcium.canteenmonitor.data.AppDatabase
+import com.globalcalcium.canteenmonitor.data.Employee
 import com.globalcalcium.canteenmonitor.data.PunchEvent
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 // ── Theme (bright palette) ─────────────────────────────────────────────────
@@ -45,7 +53,7 @@ private val RowBg = Color(0xFFF8FAFC)
  * bounded height to work with from the start, which sidesteps the entire class of
  * bug rather than trying to patch around it a third time.
  */
-private enum class Screen { DASHBOARD, SETTINGS, HISTORY }
+private enum class Screen { DASHBOARD, SETTINGS, HISTORY, ADMIN_LOGIN, DATABASE_VIEWER }
 
 @Composable
 fun CanteenDashboard(
@@ -56,6 +64,7 @@ fun CanteenDashboard(
     serialPort: String,
     serverUrl: String,
     deviceSn: String,
+    database: AppDatabase,
     onSaveSettings: (String, String, String, String) -> Unit
 ) {
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
@@ -84,6 +93,14 @@ fun CanteenDashboard(
                 punchHistory = punchHistory,
                 onBack = { screen = Screen.DASHBOARD }
             )
+            Screen.ADMIN_LOGIN -> AdminLoginScreen(
+                onBack = { screen = Screen.DASHBOARD },
+                onLoggedIn = { screen = Screen.DATABASE_VIEWER }
+            )
+            Screen.DATABASE_VIEWER -> DatabaseViewerScreen(
+                database = database,
+                onBack = { screen = Screen.DASHBOARD }
+            )
             Screen.DASHBOARD -> DashboardScreen(
                 latestPunch = latestPunch,
                 punchHistory = punchHistory,
@@ -92,7 +109,8 @@ fun CanteenDashboard(
                 lunchCount = lunchCount,
                 dinnerCount = dinnerCount,
                 onOpenSettings = { screen = Screen.SETTINGS },
-                onOpenHistory = { screen = Screen.HISTORY }
+                onOpenHistory = { screen = Screen.HISTORY },
+                onOpenAdmin = { screen = Screen.ADMIN_LOGIN }
             )
         }
     }
@@ -107,7 +125,8 @@ private fun DashboardScreen(
     lunchCount: Int,
     dinnerCount: Int,
     onOpenSettings: () -> Unit,
-    onOpenHistory: () -> Unit
+    onOpenHistory: () -> Unit,
+    onOpenAdmin: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
 
@@ -139,6 +158,13 @@ private fun DashboardScreen(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("📋 History", color = Color.White, fontSize = 12.sp)
+                }
+                Button(
+                    onClick = onOpenAdmin,
+                    colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🔐 Admin", color = Color.White, fontSize = 12.sp)
                 }
                 Button(
                     onClick = onOpenSettings,
@@ -451,4 +477,259 @@ private fun SettingsScreen(
             }
         }
     }
+}
+
+/**
+ * FEATURE (Aug-2026): admin login gate for the database viewer. There's exactly
+ * one admin account (no separate username needed) — password stored in
+ * SharedPreferences, default "admin", changeable from the viewer screen once
+ * logged in. This is a low-stakes internal tool (a serving-counter display, not
+ * a public-facing system), so a straightforward stored-password check is
+ * proportionate — not treated as a hardened security boundary.
+ */
+@Composable
+private fun AdminLoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("admin_settings", Context.MODE_PRIVATE) }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(HeaderColor, RoundedCornerShape(14.dp))
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Admin Login", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("← Cancel", color = Color.White, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = CardColor),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    "Sign in to view synced employee data and confirm what's actually stored on this device.",
+                    color = TextMuted, fontSize = 13.sp
+                )
+                Text("Username: admin", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it; error = null },
+                    label = { Text("Password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    isError = error != null
+                )
+                if (error != null) {
+                    Text(error!!, color = Color(0xFFDC2626), fontSize = 13.sp)
+                }
+                Button(
+                    onClick = {
+                        val stored = prefs.getString("admin_password", "admin") ?: "admin"
+                        if (password == stored) {
+                            onLoggedIn()
+                        } else {
+                            error = "Incorrect password"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = HeaderColor),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Login", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * FEATURE (Aug-2026): "see the database data like employee ID" — exactly what
+ * this screen shows, so a vendor/admin can confirm on the device itself whether
+ * a push from the admin portal actually arrived and was stored, without needing
+ * any external tool.
+ */
+@Composable
+private fun DatabaseViewerScreen(database: AppDatabase, onBack: () -> Unit) {
+    val context = LocalContext.current
+    var employees by remember { mutableStateOf<List<Employee>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var showChangePassword by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        employees = withContext(Dispatchers.IO) { database.employeeDao().getAll() }
+        isLoading = false
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(HeaderColor, RoundedCornerShape(14.dp))
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Synced Employees (${employees.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { showChangePassword = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🔑 Change Password", color = Color.White, fontSize = 13.sp)
+                }
+                Button(
+                    onClick = onBack,
+                    colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("← Back", color = Color.White, fontSize = 13.sp)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Card(
+            modifier = Modifier.fillMaxSize(),
+            colors = CardDefaults.cardColors(containerColor = CardColor),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            when {
+                isLoading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = HeaderColor)
+                }
+                employees.isEmpty() -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "No employees synced yet.\nPush employee data from the admin portal, then check back here.",
+                        color = TextMuted, fontSize = 15.sp, textAlign = TextAlign.Center
+                    )
+                }
+                else -> Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("EMP ID", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("NAME", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("PHOTO", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(employees) { emp ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .background(RowBg, RoundedCornerShape(8.dp))
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(emp.empId, color = AccentGreen, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text(emp.name, color = TextPrimary, fontSize = 14.sp, modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
+                                Text(
+                                    if (!emp.photoPath.isNullOrEmpty() && File(emp.photoPath).exists()) "✓ Synced" else "✗ Missing",
+                                    color = if (!emp.photoPath.isNullOrEmpty() && File(emp.photoPath).exists()) AccentGreen else Color(0xFFDC2626),
+                                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showChangePassword) {
+        ChangePasswordDialog(onDismiss = { showChangePassword = false })
+    }
+}
+
+@Composable
+private fun ChangePasswordDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("admin_settings", Context.MODE_PRIVATE) }
+    var current by remember { mutableStateOf("") }
+    var newPass by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var success by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Change Admin Password", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (success) {
+                    Text("Password updated.", color = AccentGreen, fontWeight = FontWeight.Bold)
+                } else {
+                    OutlinedTextField(
+                        value = current, onValueChange = { current = it; error = null },
+                        label = { Text("Current Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(), singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = newPass, onValueChange = { newPass = it; error = null },
+                        label = { Text("New Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(), singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = confirm, onValueChange = { confirm = it; error = null },
+                        label = { Text("Confirm New Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(), singleLine = true
+                    )
+                    if (error != null) {
+                        Text(error!!, color = Color(0xFFDC2626), fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (!success) {
+                Button(onClick = {
+                    val stored = prefs.getString("admin_password", "admin") ?: "admin"
+                    when {
+                        current != stored -> error = "Current password is incorrect"
+                        newPass.isBlank() -> error = "New password can't be empty"
+                        newPass != confirm -> error = "New password and confirmation don't match"
+                        else -> {
+                            prefs.edit().putString("admin_password", newPass).apply()
+                            success = true
+                        }
+                    }
+                }) { Text("Update") }
+            } else {
+                Button(onClick = onDismiss) { Text("Done") }
+            }
+        },
+        dismissButton = {
+            if (!success) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        }
+    )
 }

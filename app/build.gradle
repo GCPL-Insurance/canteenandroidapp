@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'kotlin-kapt'
 }
 
 android {
@@ -60,4 +61,11 @@ dependencies {
     // Room Database
     implementation 'androidx.room:room-runtime:2.6.1'
     implementation 'androidx.room:room-ktx:2.6.1'
+    // BUGFIX (Aug-2026): room-compiler was missing entirely -- Room's @Database/@Dao
+    // annotations need this to actually generate the real database implementation
+    // at build time. Without it, Employee's @Entity annotation existed but nothing
+    // in the app ever actually used Room -- everything (employee cache, punch
+    // history) was living only in an in-memory HashMap/list the whole time, wiped
+    // the moment the process was killed. This is the root cause of the "magic bug".
+    kapt 'androidx.room:room-compiler:2.6.1'
 }
