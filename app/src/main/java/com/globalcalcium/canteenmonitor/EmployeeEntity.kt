@@ -7,9 +7,10 @@ import androidx.room.PrimaryKey
 data class Employee(
     @PrimaryKey val empId: String,
     val name: String,
-    val department: String,
-    val photoUrl: String?,
-    val localPhotoPath: String?
+    val department: String = "General",
+    val privilege: Int = 0,
+    val cardNumber: String? = null,
+    val photoPath: String? = null
 )
 
 data class PunchEvent(
@@ -20,5 +21,5 @@ data class PunchEvent(
     val mealType: String,
     val punchTime: String,
     val verificationMode: String,
-    val photoUrl: String?
+    val photoPath: String?
 )
