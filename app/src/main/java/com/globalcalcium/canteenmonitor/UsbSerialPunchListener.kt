@@ -161,6 +161,12 @@ class UsbSerialPunchListener(
             val listener = object : SerialInputOutputManager.Listener {
                 override fun onNewData(data: ByteArray) {
                     val text = String(data, Charsets.UTF_8)
+                    // FEATURE (Aug-2026): "raw parser for testing purpose" -- emit
+                    // exactly what arrived, byte-for-byte as decoded text, before
+                    // any parsing logic touches it. This is what actually settles
+                    // "is data arriving at all" vs "data arrives but doesn't
+                    // parse" instead of guessing between them.
+                    onPunchParsed(mapOf("__raw" to text))
                     partialLine.append(text)
                     while (partialLine.contains("\n")) {
                         val idx = partialLine.indexOf("\n")

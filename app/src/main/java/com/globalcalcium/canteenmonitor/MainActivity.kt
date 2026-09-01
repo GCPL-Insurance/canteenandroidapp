@@ -84,6 +84,18 @@ class MainActivity : ComponentActivity() {
         var usbBaudRate by mutableStateOf(prefs.getString("usb_baud_rate", "9600") ?: "9600")
 
         val latestPunchState = mutableStateOf<PunchEvent?>(null)
+        // FEATURE (Aug-2026): "raw parser for testing purpose" -- a visible,
+        // timestamped log of exactly what's arriving (raw text) and the
+        // connection's own status (connected, permission denied, no compatible
+        // device, read errors). This used to only go to Log.i(), invisible
+        // without adb logcat -- exactly the wrong thing to be invisible when
+        // diagnosing "why isn't this receiving/parsing data".
+        val rawLogState = mutableStateListOf<String>()
+        fun logRaw(line: String) {
+            val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            rawLogState.add(0, "$ts  $line")
+            if (rawLogState.size > 500) rawLogState.removeAt(rawLogState.size - 1)
+        }
         val punchHistoryState = mutableStateListOf<PunchEvent>()
         val totalCountState = mutableStateOf(0)
         var serial = 0
@@ -138,11 +150,14 @@ class MainActivity : ComponentActivity() {
                     usbListener = listener
                     lifecycleScope.launch {
                         listener.startListening().collect { map ->
-                            val status = map["__status"]
-                            if (status != null) {
-                                android.util.Log.i("UsbSerialPunchListener", "status: $status")
-                            } else {
-                                handlePunchMap(map)
+                            when {
+                                map.containsKey("__status") -> {
+                                    logRaw("[STATUS] ${map["__status"]}")
+                                }
+                                map.containsKey("__raw") -> {
+                                    logRaw("[RAW] ${map["__raw"]?.replace("\n", "\\n")}")
+                                }
+                                else -> handlePunchMap(map)
                             }
                         }
                     }
@@ -150,7 +165,13 @@ class MainActivity : ComponentActivity() {
                 else -> {
                     val tcpListener = TcpPunchListener(ip, port)
                     lifecycleScope.launch {
-                        tcpListener.startListening().collect { map -> handlePunchMap(map) }
+                        tcpListener.startListening().collect { map ->
+                            if (map.containsKey("__raw")) {
+                                logRaw("[RAW] ${map["__raw"]?.replace("\n", "\\n")}")
+                            } else {
+                                handlePunchMap(map)
+                            }
+                        }
                     }
                 }
             }
@@ -180,6 +201,7 @@ class MainActivity : ComponentActivity() {
                 latestPunch = latestPunchState.value,
                 punchHistory = punchHistoryState,
                 totalCount = totalCountState.value,
+                rawLog = rawLogState,
                 serialIp = serialIp,
                 serialPort = serialPort,
                 serverUrl = serverUrl,

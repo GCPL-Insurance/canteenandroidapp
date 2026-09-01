@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -53,13 +54,14 @@ private val RowBg = Color(0xFFF8FAFC)
  * bounded height to work with from the start, which sidesteps the entire class of
  * bug rather than trying to patch around it a third time.
  */
-private enum class Screen { DASHBOARD, SETTINGS, HISTORY, ADMIN_LOGIN, DATABASE_VIEWER }
+private enum class Screen { DASHBOARD, SETTINGS, HISTORY, ADMIN_LOGIN, DATABASE_VIEWER, RAW_DATA }
 
 @Composable
 fun CanteenDashboard(
     latestPunch: PunchEvent?,
     punchHistory: List<PunchEvent>,
     totalCount: Int,
+    rawLog: List<String>,
     serialIp: String,
     serialPort: String,
     serverUrl: String,
@@ -105,6 +107,11 @@ fun CanteenDashboard(
                 database = database,
                 onBack = { screen = Screen.DASHBOARD }
             )
+            Screen.RAW_DATA -> RawDataScreen(
+                rawLog = rawLog,
+                connectionMode = connectionMode,
+                onBack = { screen = Screen.DASHBOARD }
+            )
             Screen.DASHBOARD -> DashboardScreen(
                 latestPunch = latestPunch,
                 punchHistory = punchHistory,
@@ -114,7 +121,8 @@ fun CanteenDashboard(
                 dinnerCount = dinnerCount,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 onOpenHistory = { screen = Screen.HISTORY },
-                onOpenAdmin = { screen = Screen.ADMIN_LOGIN }
+                onOpenAdmin = { screen = Screen.ADMIN_LOGIN },
+                onOpenRawData = { screen = Screen.RAW_DATA }
             )
         }
     }
@@ -130,7 +138,8 @@ private fun DashboardScreen(
     dinnerCount: Int,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenAdmin: () -> Unit
+    onOpenAdmin: () -> Unit,
+    onOpenRawData: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
 
@@ -162,6 +171,13 @@ private fun DashboardScreen(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("📋 History", color = Color.White, fontSize = 12.sp)
+                }
+                Button(
+                    onClick = onOpenRawData,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB45309)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🔍 Raw Data", color = Color.White, fontSize = 12.sp)
                 }
                 Button(
                     onClick = onOpenAdmin,
@@ -339,6 +355,79 @@ private fun ModeButton(label: String, selected: Boolean, modifier: Modifier = Mo
  * move to a full screen is mainly for consistency with Settings and to give a
  * long list more room to breathe, not because this one had the same bug.
  */
+/**
+ * FEATURE (Aug-2026): "raw parser for testing purpose" — shows exactly what's
+ * arriving from whichever connection is active (network or USB), completely
+ * unprocessed, plus the connection's own status (connected, permission denied,
+ * no compatible device, read errors). This settles definitively whether a "no
+ * data" problem is "nothing is arriving at all" vs "data arrives but doesn't
+ * parse" — instead of guessing between those two very different problems.
+ */
+@Composable
+private fun RawDataScreen(rawLog: List<String>, connectionMode: String, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFB45309), RoundedCornerShape(14.dp))
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("🔍 Raw Data (Diagnostic)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(
+                    "Mode: ${if (connectionMode == "usb_direct") "Direct USB" else "Network (LAN)"}",
+                    color = Color(0xFFFEF3C7), fontSize = 12.sp
+                )
+            }
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF92400E)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("← Back", color = Color.White, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            "Shows exactly what's arriving, unprocessed. [STATUS] lines are connection events; [RAW] lines are the literal bytes received. If you see no lines at all, nothing is reaching the app — that's a connection/hardware issue, not a parsing one. If you see [RAW] lines but no punches ever appear on the dashboard, that's a parsing issue with whatever format is showing here.",
+            color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 10.dp)
+        )
+
+        Card(
+            modifier = Modifier.fillMaxSize(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            if (rawLog.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Nothing received yet.", color = Color(0xFF94A3B8), fontSize = 15.sp)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+                    items(rawLog) { line ->
+                        Text(
+                            line,
+                            color = when {
+                                line.contains("[STATUS]") -> Color(0xFFFBBF24)
+                                line.contains("Access Granted") -> Color(0xFF6EE7B7)
+                                else -> Color(0xFFA5B4FC)
+                            },
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun HistoryScreen(punchHistory: List<PunchEvent>, onBack: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {

@@ -23,6 +23,10 @@ class TcpPunchListener(private val host: String, private val port: Int) {
 
                 while (true) {
                     val line = reader.readLine() ?: break
+                    // FEATURE (Aug-2026): raw diagnostic emission, matching
+                    // UsbSerialPunchListener -- lets the same raw-data viewer work
+                    // for either connection mode.
+                    emit(mapOf("__raw" to (line + "\n")))
                     buffer.append(line).append("\n")
 
                     if (line.contains("Access Granted")) {
