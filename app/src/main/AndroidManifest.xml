@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- FEATURE (Aug-2026): direct USB serial input (RS485-to-USB converter into
-         the tablet's USB-C port). required="false" -- the app must keep working
+         the tablet's USB-C port). required="false", the app must keep working
          normally on tablets that don't support USB host/OTG mode, this is purely
          an additional option, not a requirement. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
