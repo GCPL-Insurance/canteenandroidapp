@@ -175,7 +175,18 @@ class UsbSerialPunchListener(
 
                         buffer.append(line).append("\n")
 
-                        if (line.contains("Access Granted")) {
+                        // FEATURE (Aug-2026): "show invalid/rejected verification"
+                        // -- the current device firmware only ever sends "Access
+                        // Granted", so this recognizes the most likely keywords a
+                        // future firmware update might use for a failed
+                        // verification, without knowing the exact wording ESSL
+                        // will actually send yet. Once confirmed, add/adjust the
+                        // exact keyword here and in TcpPunchListener's matching
+                        // list -- this is deliberately the one place that needs
+                        // updating, not scattered logic.
+                        val rejectionKeywords = listOf("Access Denied", "Verification Failed", "Access Rejected", "Invalid Card", "Unauthorized")
+                        val isRejection = rejectionKeywords.any { line.contains(it, ignoreCase = true) }
+                        if (line.contains("Access Granted") || isRejection) {
                             val parsed = parsePunchBlock(buffer.toString())
                             if (parsed.containsKey("User ID")) {
                                 onPunchParsed(parsed)
@@ -203,13 +214,20 @@ class UsbSerialPunchListener(
     }
 
     private fun parsePunchBlock(block: String): Map<String, String> {
+        val rejectionKeywords = listOf("Access Denied", "Verification Failed", "Access Rejected", "Invalid Card", "Unauthorized")
         val result = mutableMapOf<String, String>()
         block.lines().forEach { line ->
-            if (line.contains(":")) {
-                val parts = line.split(":", limit = 2)
-                result[parts[0].trim()] = parts[1].trim()
-            } else if (line.contains("Access Granted")) {
-                result["Status"] = "Access Granted"
+            val matchedRejection = rejectionKeywords.firstOrNull { line.contains(it, ignoreCase = true) }
+            when {
+                matchedRejection != null -> {
+                    result["Status"] = "Rejected"
+                    result["RejectionReason"] = matchedRejection
+                }
+                line.contains("Access Granted") -> result["Status"] = "Access Granted"
+                line.contains(":") -> {
+                    val parts = line.split(":", limit = 2)
+                    result[parts[0].trim()] = parts[1].trim()
+                }
             }
         }
         return result

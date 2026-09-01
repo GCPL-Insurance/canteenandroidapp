@@ -6,14 +6,20 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.globalcalcium.canteenmonitor.data.AppDatabase
 import com.globalcalcium.canteenmonitor.data.Employee
 import com.globalcalcium.canteenmonitor.data.PunchEvent
 import com.globalcalcium.canteenmonitor.network.AdmsClient
+import com.globalcalcium.canteenmonitor.network.MobileSyncClient
 import com.globalcalcium.canteenmonitor.network.TcpPunchListener
 import com.globalcalcium.canteenmonitor.network.UsbSerialPunchListener
 import com.globalcalcium.canteenmonitor.ui.CanteenDashboard
@@ -22,14 +28,31 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private var punchJob: Job? = null
     private var admsClient: AdmsClient? = null
     private var usbListener: UsbSerialPunchListener? = null
+    private var mobileSyncClient: MobileSyncClient? = null
+    private var tts: TextToSpeech? = null
 
     private lateinit var db: AppDatabase
     private val employeeCache = mutableMapOf<String, Employee>()
+
+    // FEATURE (Aug-2026): true full-screen kiosk mode -- hides the status bar and
+    // navigation bar, matching a dedicated serving-counter display rather than a
+    // normal app. BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE means a swipe from the
+    // edge still temporarily reveals the bars if needed (e.g. to reach device
+    // settings), rather than requiring a full app restart to get them back.
+    private fun enableFullScreenMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
 
     // FEATURE (Aug-2026): this app is meant to run continuously as a kiosk-style
     // serving display -- request an exemption from battery optimization so a
@@ -62,7 +85,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableFullScreenMode()
         db = AppDatabase.getInstance(this)
+
+        // FEATURE (Aug-2026): voice accepted/rejected -- speaks the verification
+        // result aloud as each punch happens, useful for a serving counter where
+        // staff aren't always looking directly at the screen. US English locale
+        // as a reasonable default; if unavailable on a given device this fails
+        // silently rather than crashing (checked via the init status callback).
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+            }
+        }
 
         val prefs = getSharedPreferences("canteen_settings", Context.MODE_PRIVATE)
         requestBatteryOptimizationExemption(prefs)
@@ -84,6 +119,12 @@ class MainActivity : ComponentActivity() {
         var usbBaudRate by mutableStateOf(prefs.getString("usb_baud_rate", "9600") ?: "9600")
 
         val latestPunchState = mutableStateOf<PunchEvent?>(null)
+        // FEATURE (Aug-2026): rejections are tracked separately from successful
+        // punches -- shown as a distinct red popup, not mixed into the "last 5
+        // served" list or counted toward meal totals, since a rejection doesn't
+        // represent a meal actually served. Still persisted to the database
+        // either way, for the audit trail.
+        val latestRejectionState = mutableStateOf<PunchEvent?>(null)
         // FEATURE (Aug-2026): "raw parser for testing purpose" -- a visible,
         // timestamped log of exactly what's arriving (raw text) and the
         // connection's own status (connected, permission denied, no compatible
@@ -108,6 +149,8 @@ class MainActivity : ComponentActivity() {
 
             val photoFile = File(filesDir, "photos/$empId.jpg")
             val photoPath = if (photoFile.exists()) photoFile.absolutePath else cachedEmp?.photoPath
+            val isRejected = map["Status"] == "Rejected"
+            val rejectionReason = map["RejectionReason"]
 
             serial++
             val event = PunchEvent(
@@ -123,11 +166,34 @@ class MainActivity : ComponentActivity() {
                 mealType = map["Punch State"] ?: "BREAKFAST",
                 punchTime = map["Punch Time"] ?: "",
                 verificationMode = map["Verification Mode"] ?: "Face",
-                photoPath = photoPath
+                photoPath = photoPath,
+                isRejected = isRejected,
+                rejectionReason = rejectionReason
             )
-            latestPunchState.value = event
-            punchHistoryState.add(0, event)
-            totalCountState.value = serial
+
+            // FEATURE (Aug-2026): "voice accepted/rejected" -- speaks the outcome
+            // aloud as it happens. Uses QUEUE_FLUSH so a rapid second punch
+            // doesn't queue up a backlog of announcements playing late.
+            tts?.speak(
+                if (isRejected) "Access Denied${rejectionReason?.let { ", $it" } ?: ""}" else "Access Granted",
+                TextToSpeech.QUEUE_FLUSH, null, null
+            )
+
+            if (isRejected) {
+                latestRejectionState.value = event
+            } else {
+                latestPunchState.value = event
+                punchHistoryState.add(0, event)
+                // BUGFIX (Aug-2026): this used to set totalCountState = serial
+                // directly, which is the LOCAL device's own scan counter only --
+                // once mobile sync also started incrementing this same state for
+                // cloud-synced tokens, the next LOCAL punch would silently
+                // overwrite (not add to) whatever the sync loop had contributed.
+                // Deriving it from punchHistoryState.size instead means both
+                // sources contribute consistently, since both already append to
+                // that same list before this line runs.
+                totalCountState.value = punchHistoryState.size
+            }
 
             withContext(Dispatchers.IO) { db.punchDao().insert(event) }
         }
@@ -136,6 +202,7 @@ class MainActivity : ComponentActivity() {
             punchJob?.cancel()
             admsClient?.stop()
             usbListener?.stop()
+            mobileSyncClient?.stop()
 
             admsClient = AdmsClient(this, sUrl, sn) { emp ->
                 employeeCache[emp.empId] = emp
@@ -143,6 +210,27 @@ class MainActivity : ComponentActivity() {
                     db.employeeDao().upsert(emp)
                 }
             }.also { it.startSyncLoop(lifecycleScope) }
+
+            // FEATURE (Aug-2026): "our idea is this Android app is like one of
+            // our ESSL machines... better data sync capability" -- pulls tokens
+            // this device wouldn't otherwise see through its own serial/USB
+            // connection, most notably manual vendor tokens. Deliberately does
+            // NOT update latestPunchState (the "spotlight" card) -- that stays
+            // reserved for someone actually scanned at THIS counter, since a
+            // vendor token synced from the admin portal has no photo and
+            // overwriting a just-scanned person's photo with it would be
+            // confusing at a busy counter. It DOES count toward the total and
+            // appear in history, since a vendor token represents a real meal
+            // served.
+            mobileSyncClient = MobileSyncClient(this, sUrl, sn).also { client ->
+                lifecycleScope.launch {
+                    client.startSyncLoop(lifecycleScope).collect { event ->
+                        punchHistoryState.add(0, event)
+                        totalCountState.value = punchHistoryState.size
+                        withContext(Dispatchers.IO) { db.punchDao().insert(event) }
+                    }
+                }
+            }
 
             punchJob = when (mode) {
                 "usb_direct" -> {
@@ -199,6 +287,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             CanteenDashboard(
                 latestPunch = latestPunchState.value,
+                latestRejection = latestRejectionState.value,
                 punchHistory = punchHistoryState,
                 totalCount = totalCountState.value,
                 rawLog = rawLogState,
@@ -235,5 +324,11 @@ class MainActivity : ComponentActivity() {
                 }
             )
         }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }

@@ -29,7 +29,13 @@ class TcpPunchListener(private val host: String, private val port: Int) {
                     emit(mapOf("__raw" to (line + "\n")))
                     buffer.append(line).append("\n")
 
-                    if (line.contains("Access Granted")) {
+                    // FEATURE (Aug-2026): "show invalid/rejected verification" --
+                    // mirrors the exact same keyword set as
+                    // UsbSerialPunchListener. Update both together if ESSL
+                    // confirms the real wording their firmware will send.
+                    val rejectionKeywords = listOf("Access Denied", "Verification Failed", "Access Rejected", "Invalid Card", "Unauthorized")
+                    val isRejection = rejectionKeywords.any { line.contains(it, ignoreCase = true) }
+                    if (line.contains("Access Granted") || isRejection) {
                         val parsed = parsePunchBlock(buffer.toString())
                         if (parsed.containsKey("User ID")) {
                             emit(parsed)
@@ -47,13 +53,20 @@ class TcpPunchListener(private val host: String, private val port: Int) {
     }.flowOn(Dispatchers.IO)
 
     private fun parsePunchBlock(block: String): Map<String, String> {
+        val rejectionKeywords = listOf("Access Denied", "Verification Failed", "Access Rejected", "Invalid Card", "Unauthorized")
         val result = mutableMapOf<String, String>()
         block.lines().forEach { line ->
-            if (line.contains(":")) {
-                val parts = line.split(":", limit = 2)
-                result[parts[0].trim()] = parts[1].trim()
-            } else if (line.contains("Access Granted")) {
-                result["Status"] = "Access Granted"
+            val matchedRejection = rejectionKeywords.firstOrNull { line.contains(it, ignoreCase = true) }
+            when {
+                matchedRejection != null -> {
+                    result["Status"] = "Rejected"
+                    result["RejectionReason"] = matchedRejection
+                }
+                line.contains("Access Granted") -> result["Status"] = "Access Granted"
+                line.contains(":") -> {
+                    val parts = line.split(":", limit = 2)
+                    result[parts[0].trim()] = parts[1].trim()
+                }
             }
         }
         return result

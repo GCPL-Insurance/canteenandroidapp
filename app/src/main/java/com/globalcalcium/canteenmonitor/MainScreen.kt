@@ -2,6 +2,7 @@ package com.globalcalcium.canteenmonitor.ui
 
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -59,6 +60,7 @@ private enum class Screen { DASHBOARD, SETTINGS, HISTORY, ADMIN_LOGIN, DATABASE_
 @Composable
 fun CanteenDashboard(
     latestPunch: PunchEvent?,
+    latestRejection: PunchEvent?,
     punchHistory: List<PunchEvent>,
     totalCount: Int,
     rawLog: List<String>,
@@ -79,6 +81,15 @@ fun CanteenDashboard(
     val breakfastCount = punchHistory.count { it.mealType.equals("BREAKFAST", ignoreCase = true) }
     val lunchCount = punchHistory.count { it.mealType.equals("LUNCH", ignoreCase = true) }
     val dinnerCount = punchHistory.count { it.mealType.equals("DINNER", ignoreCase = true) }
+
+    // FEATURE (Aug-2026): "show invalid/rejected verification... popup with red"
+    // — shown as a global overlay regardless of which screen is currently open,
+    // so a rejection is never missed just because the operator happened to be
+    // browsing Settings or History at that moment. Tracks the last-dismissed
+    // rejection's own row id so re-composition doesn't keep re-showing the same
+    // one after it's already been acknowledged.
+    var dismissedRejectionId by remember { mutableStateOf<Long?>(null) }
+    val showRejectionPopup = latestRejection != null && latestRejection.id != dismissedRejectionId
 
     Surface(modifier = Modifier.fillMaxSize(), color = BgColor) {
         when (screen) {
@@ -125,6 +136,56 @@ fun CanteenDashboard(
                 onOpenRawData = { screen = Screen.RAW_DATA }
             )
         }
+
+        if (showRejectionPopup && latestRejection != null) {
+            RejectionPopup(
+                rejection = latestRejection,
+                onDismiss = { dismissedRejectionId = latestRejection.id }
+            )
+        }
+    }
+}
+
+/**
+ * FEATURE (Aug-2026): full-screen red alert for a failed verification. Auto
+ * dismisses after 6 seconds on its own (LaunchedEffect keyed to the rejection's
+ * own id, so a NEW rejection arriving resets the timer rather than inheriting
+ * whatever was left of the previous one's countdown) — but can also be dismissed
+ * immediately by tapping anywhere, since a busy serving counter shouldn't be
+ * blocked waiting on a timer if staff have already seen it.
+ */
+@Composable
+private fun RejectionPopup(rejection: PunchEvent, onDismiss: () -> Unit) {
+    LaunchedEffect(rejection.id) {
+        kotlinx.coroutines.delay(6000)
+        onDismiss()
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC7F1D1D))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFDC2626)),
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.padding(32.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(40.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text("✕ ACCESS DENIED", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 32.sp)
+                Text("Emp ID: ${rejection.empId}", color = Color.White, fontSize = 20.sp)
+                if (!rejection.rejectionReason.isNullOrBlank()) {
+                    Text(rejection.rejectionReason, color = Color(0xFFFECACA), fontSize = 16.sp)
+                }
+                Text(rejection.punchTime, color = Color(0xFFFECACA), fontSize = 14.sp)
+                Text("(tap anywhere to dismiss)", color = Color(0xFFFECACA), fontSize = 12.sp)
+            }
+        }
     }
 }
 
@@ -141,6 +202,11 @@ private fun DashboardScreen(
     onOpenAdmin: () -> Unit,
     onOpenRawData: () -> Unit
 ) {
+    // FEATURE (Aug-2026): "touch and see the full pic and back to normal
+    // dashboard" — tapping a row in Last 5 opens this person's photo full-screen;
+    // setting it back to null returns to the normal dashboard.
+    var fullScreenPhoto by remember { mutableStateOf<PunchEvent?>(null) }
+
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
 
         // Top Bar
@@ -226,19 +292,25 @@ private fun DashboardScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        Text("TOKEN #${latestPunch.serialNo}", color = AccentGreen, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                        Text("TOKEN #${latestPunch.serialNo}", color = AccentGreen, fontWeight = FontWeight.ExtraBold, fontSize = 30.sp)
 
-                        val photoModel = if (!latestPunch.photoPath.isNullOrEmpty()) File(latestPunch.photoPath) else "https://via.placeholder.com/200x240/e2e8f0/64748b?text=No+Photo"
+                        // FEATURE (Aug-2026): "increase the size for visibility" —
+                        // enlarged from 170x210 to 230x280, and made tappable
+                        // (same full-screen photo viewer as the Last 5 list).
+                        val photoModel = if (!latestPunch.photoPath.isNullOrEmpty()) File(latestPunch.photoPath) else "https://via.placeholder.com/230x280/e2e8f0/64748b?text=No+Photo"
                         AsyncImage(
                             model = photoModel,
                             contentDescription = null,
-                            modifier = Modifier.size(170.dp, 210.dp).clip(RoundedCornerShape(14.dp)),
+                            modifier = Modifier
+                                .size(230.dp, 280.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { fullScreenPhoto = latestPunch },
                             contentScale = ContentScale.Crop
                         )
 
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(latestPunch.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                            Text(latestPunch.department, color = TextMuted, fontSize = 14.sp)
+                            Text(latestPunch.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 26.sp)
+                            Text(latestPunch.department, color = TextMuted, fontSize = 16.sp)
                         }
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -270,6 +342,8 @@ private fun DashboardScreen(
             // Last 5 tokens — large, made explicitly for at-a-glance reading
             // from a serving counter a few feet away. Full history is behind
             // the 📋 History screen above, not crammed into this list too.
+            // FEATURE (Aug-2026): thumbnail photo per row, tap anywhere on a row
+            // to see that person's photo full-screen.
             Card(
                 modifier = Modifier.weight(0.58f).fillMaxHeight(),
                 colors = CardDefaults.cardColors(containerColor = CardColor),
@@ -283,25 +357,77 @@ private fun DashboardScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 5.dp)
-                                    .background(RowBg, RoundedCornerShape(10.dp))
+                                    .padding(vertical = 6.dp)
+                                    .background(RowBg, RoundedCornerShape(12.dp))
+                                    .clickable { fullScreenPhoto = item }
                                     .padding(14.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("#${item.serialNo}", color = AccentGreen, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+                                val thumbModel = if (!item.photoPath.isNullOrEmpty()) File(item.photoPath) else null
+                                if (thumbModel != null) {
+                                    AsyncImage(
+                                        model = thumbModel,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                }
+                                Text("#${item.serialNo}", color = AccentGreen, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp)
                                 Column(horizontalAlignment = Alignment.Start, modifier = Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                                    Text(item.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                                    Text(item.empId, color = TextMuted, fontSize = 15.sp)
+                                    Text(item.name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 23.sp)
+                                    Text(item.empId, color = TextMuted, fontSize = 16.sp)
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
-                                    Text(item.mealType, color = AccentAmber, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                    Text(item.punchTime, color = TextMuted, fontSize = 15.sp)
+                                    Text(item.mealType, color = AccentAmber, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                                    Text(item.punchTime, color = TextMuted, fontSize = 16.sp)
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    if (fullScreenPhoto != null) {
+        FullScreenPhotoViewer(event = fullScreenPhoto!!, onBack = { fullScreenPhoto = null })
+    }
+}
+
+/**
+ * FEATURE (Aug-2026): "touch and see the full pic and back to normal dashboard" —
+ * tapping anywhere (or the explicit Back button) returns to the dashboard exactly
+ * as it was, since this is an overlay rather than a real screen navigation.
+ */
+@Composable
+private fun FullScreenPhotoViewer(event: PunchEvent, onBack: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.92f))
+            .clickable(onClick = onBack),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            val photoModel = if (!event.photoPath.isNullOrEmpty()) File(event.photoPath) else "https://via.placeholder.com/400x500/1e293b/94a3b8?text=No+Photo"
+            AsyncImage(
+                model = photoModel,
+                contentDescription = null,
+                modifier = Modifier.size(420.dp, 520.dp).clip(RoundedCornerShape(24.dp)),
+                contentScale = ContentScale.Crop
+            )
+            Text(event.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 28.sp)
+            Text("Emp ID: ${event.empId}  •  Token #${event.serialNo}", color = Color(0xFFCBD5E1), fontSize = 18.sp)
+            Text("${event.mealType} • ${event.punchTime}", color = Color(0xFF94A3B8), fontSize = 15.sp)
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(containerColor = HeaderColor),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("← Back to Dashboard", color = Color.White, fontSize = 15.sp)
             }
         }
     }

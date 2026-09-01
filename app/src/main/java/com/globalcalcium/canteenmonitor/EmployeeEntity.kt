@@ -22,6 +22,13 @@ data class Employee(
  * unchanged, since it defaults to 0 and Room assigns the real value on insert).
  * `serialNo` is kept as-is — it's the meaningful "Token #" shown in the UI, a
  * separate concept from the underlying database row id.
+ *
+ * FEATURE (Aug-2026): isRejected/rejectionReason — for showing failed
+ * verification attempts (red popup) once the device firmware actually sends
+ * them; source distinguishes a punch scanned by this device from one synced
+ * down from the cloud (e.g. a manual vendor token issued from the admin
+ * portal) — both are real defaults so this doesn't require a destructive
+ * migration for anyone upgrading from before these fields existed.
  */
 @Entity(tableName = "punch_events")
 data class PunchEvent(
@@ -33,5 +40,8 @@ data class PunchEvent(
     val mealType: String,
     val punchTime: String,
     val verificationMode: String,
-    val photoPath: String?
+    val photoPath: String?,
+    val isRejected: Boolean = false,
+    val rejectionReason: String? = null,
+    val source: String = "device"
 )
