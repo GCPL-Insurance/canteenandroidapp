@@ -14,7 +14,6 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import java.util.concurrent.Executors
 
 /**
  * FEATURE (Aug-2026): direct USB serial input — an RS485-to-USB converter plugged
@@ -146,9 +145,14 @@ class UsbSerialPunchListener(
                     onPunchParsed(mapOf("__status" to "usb_read_error: ${e.message}"))
                 }
             }
-            ioManager = SerialInputOutputManager(serialPort, listener).also {
-                Executors.newSingleThreadExecutor().submit(it)
-            }
+            // BUGFIX (Aug-2026): SerialInputOutputManager stopped being submittable
+            // to an ExecutorService as of this library's v3.9.0 release -- it
+            // manages its own internal thread now via start()/stop() directly.
+            // We're on 3.10.0, so the old Executors.newSingleThreadExecutor()
+            // .submit(ioManager) pattern (which worked on older versions) no
+            // longer compiles: ioManager doesn't implement Runnable anymore.
+            ioManager = SerialInputOutputManager(serialPort, listener)
+            ioManager?.start()
         } catch (e: Exception) {
             onPunchParsed(mapOf("__status" to "usb_connect_exception: ${e.message}"))
         }
