@@ -3,6 +3,7 @@ package com.globalcalcium.canteenmonitor.network
 import android.content.Context
 import com.globalcalcium.canteenmonitor.data.PunchEvent
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import org.json.JSONObject
@@ -44,7 +45,7 @@ class MobileSyncClient(
 
     fun startSyncLoop(scope: CoroutineScope, intervalSeconds: Long = 30): Flow<PunchEvent> = callbackFlow {
         val job = scope.launch(Dispatchers.IO) {
-            while (isRunning) {
+            while (isRunning && isActive) {
                 try {
                     val sinceId = prefs.getLong("since_id", 0)
                     val encodedSn = URLEncoder.encode(deviceSn, "UTF-8")
@@ -83,6 +84,9 @@ class MobileSyncClient(
                             prefs.edit().putLong("since_id", maxId).apply()
                         }
                     }
+                    conn.disconnect()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
