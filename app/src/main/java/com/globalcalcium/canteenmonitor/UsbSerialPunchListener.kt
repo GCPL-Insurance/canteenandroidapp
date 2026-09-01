@@ -142,18 +142,32 @@ class UsbSerialPunchListener(
 
             onPunchParsed(mapOf("__status" to "connected"))
 
+            // BUGFIX (Aug-2026): this is the actual reason no punches were ever
+            // being parsed, confirmed against a real device log capture. The
+            // previous version REMOVED each line from the buffer as it was
+            // processed, before checking for "Access Granted" -- so by the time
+            // "Access Granted" arrived, every preceding field line (User ID,
+            // Name, Punch Time, etc.) had ALREADY been deleted, and there was
+            // nothing left to parse but the device's trailing control-character
+            // padding. Fixed to match TcpPunchListener's proven-correct approach
+            // exactly: APPEND every line to the buffer and never remove anything
+            // until "Access Granted" appears, then parse the FULL accumulated
+            // buffer (which still has every field line intact) before clearing
+            // it for the next block. The device's own control-character padding
+            // lines (^K etc., visible in a raw serial capture) are harmless
+            // either way -- parsePunchBlock only picks up lines containing ":".
             val buffer = StringBuilder()
+            var partialLine = StringBuilder()
             val listener = object : SerialInputOutputManager.Listener {
                 override fun onNewData(data: ByteArray) {
                     val text = String(data, Charsets.UTF_8)
-                    buffer.append(text)
-                    // Same line-based "Key: Value" ... "Access Granted" protocol
-                    // as TcpPunchListener — process complete lines only, keep any
-                    // trailing partial line in the buffer for the next chunk.
-                    while (buffer.contains("\n")) {
-                        val idx = buffer.indexOf("\n")
-                        val line = buffer.substring(0, idx).trim()
-                        buffer.delete(0, idx + 1)
+                    partialLine.append(text)
+                    while (partialLine.contains("\n")) {
+                        val idx = partialLine.indexOf("\n")
+                        val line = partialLine.substring(0, idx)
+                        partialLine.delete(0, idx + 1)
+
+                        buffer.append(line).append("\n")
 
                         if (line.contains("Access Granted")) {
                             val parsed = parsePunchBlock(buffer.toString())

@@ -38,7 +38,14 @@ class MainActivity : ComponentActivity() {
     // crashes fixed in UsbSerialPunchListener). Only requested once per install
     // (checked against isIgnoringBatteryOptimizations); if the user dismisses
     // the system prompt, this doesn't ask again every single launch.
-    private fun requestBatteryOptimizationExemption() {
+    // BUGFIX (Aug-2026): this used to check isIgnoringBatteryOptimizations() on
+    // every launch and re-prompt if it was still false -- but that stays false
+    // forever if the user dismisses or declines the system dialog, meaning it
+    // would ask again every single time the app opened, with no way to say "no,
+    // don't ask again." Now tracked explicitly via SharedPreferences: asked once,
+    // and that choice (granted or declined) is respected from then on.
+    private fun requestBatteryOptimizationExemption(prefs: android.content.SharedPreferences) {
+        if (prefs.getBoolean("battery_optimization_asked", false)) return
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
             try {
@@ -50,14 +57,15 @@ class MainActivity : ComponentActivity() {
                 e.printStackTrace()
             }
         }
+        prefs.edit().putBoolean("battery_optimization_asked", true).apply()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = AppDatabase.getInstance(this)
-        requestBatteryOptimizationExemption()
 
         val prefs = getSharedPreferences("canteen_settings", Context.MODE_PRIVATE)
+        requestBatteryOptimizationExemption(prefs)
 
         // BUGFIX (Aug-2026): these were plain Kotlin `var`s, read once from
         // SharedPreferences at startup and handed to Compose as simple values.
@@ -93,7 +101,12 @@ class MainActivity : ComponentActivity() {
             val event = PunchEvent(
                 serialNo = serial,
                 empId = empId,
-                name = cachedEmp?.name ?: (map["Name"] ?: "Employee $empId"),
+                // BUGFIX (Aug-2026): confirmed from a real device capture that
+                // "Name:" arrives as an empty string, not absent -- ?: alone only
+                // falls through on null, so an unsynced employee would show a
+                // blank name instead of the intended placeholder. ifBlank treats
+                // empty-or-whitespace the same as null for fallback purposes.
+                name = cachedEmp?.name?.ifBlank { null } ?: map["Name"]?.ifBlank { null } ?: "Employee $empId",
                 department = cachedEmp?.department ?: "General",
                 mealType = map["Punch State"] ?: "BREAKFAST",
                 punchTime = map["Punch Time"] ?: "",
