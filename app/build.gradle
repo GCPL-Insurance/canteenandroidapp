@@ -76,5 +76,9 @@ dependencies {
     // USB device and handles the chip-specific protocol, covering all four of the
     // most common ones without needing to know in advance which is inside a given
     // converter.
-    implementation 'com.github.mik3y:usb-serial-for-android:3.7.1'
+    // BUGFIX (Aug-2026): 3.7.1 was never a real released version -- confirmed
+    // against the project's actual GitHub Releases page (not just a README, which
+    // can reference an in-progress version ahead of its real tagged release) that
+    // 3.10.0 is the current latest tag JitPack can actually build.
+    implementation 'com.github.mik3y:usb-serial-for-android:3.10.0'
 }
