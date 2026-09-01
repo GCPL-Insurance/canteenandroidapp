@@ -64,8 +64,10 @@ fun CanteenDashboard(
     serialPort: String,
     serverUrl: String,
     deviceSn: String,
+    connectionMode: String,
+    usbBaudRate: String,
     database: AppDatabase,
-    onSaveSettings: (String, String, String, String) -> Unit
+    onSaveSettings: (String, String, String, String, String, String) -> Unit
 ) {
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
 
@@ -83,9 +85,11 @@ fun CanteenDashboard(
                 currentSerialPort = serialPort,
                 currentServerUrl = serverUrl,
                 currentDeviceSn = deviceSn,
+                currentConnectionMode = connectionMode,
+                currentUsbBaudRate = usbBaudRate,
                 onBack = { screen = Screen.DASHBOARD },
-                onSave = { ip, port, url, sn ->
-                    onSaveSettings(ip, port, url, sn)
+                onSave = { ip, port, url, sn, mode, baud ->
+                    onSaveSettings(ip, port, url, sn, mode, baud)
                     screen = Screen.DASHBOARD
                 }
             )
@@ -313,6 +317,21 @@ fun InfoItem(label: String, value: String, valueColor: Color = TextPrimary) {
     }
 }
 
+@Composable
+private fun ModeButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(48.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) HeaderColor else RowBg,
+            contentColor = if (selected) Color.White else TextMuted
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text(label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+    }
+}
+
 /**
  * FEATURE (Aug-2026): "review previous tokens" — full-screen now (previously a
  * dialog capped at a fixed height). LazyColumn is safe on its own here (it
@@ -392,13 +411,17 @@ private fun SettingsScreen(
     currentSerialPort: String,
     currentServerUrl: String,
     currentDeviceSn: String,
+    currentConnectionMode: String,
+    currentUsbBaudRate: String,
     onBack: () -> Unit,
-    onSave: (String, String, String, String) -> Unit
+    onSave: (String, String, String, String, String, String) -> Unit
 ) {
     var ip by remember { mutableStateOf(currentSerialIp) }
     var port by remember { mutableStateOf(currentSerialPort) }
     var url by remember { mutableStateOf(currentServerUrl) }
     var sn by remember { mutableStateOf(currentDeviceSn) }
+    var mode by remember { mutableStateOf(currentConnectionMode) }
+    var baud by remember { mutableStateOf(currentUsbBaudRate) }
 
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
         Row(
@@ -436,19 +459,51 @@ private fun SettingsScreen(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Text("SERIAL CONVERTER", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                OutlinedTextField(
-                    value = ip, onValueChange = { ip = it },
-                    label = { Text("USR Serial Converter IP") },
+                // FEATURE (Aug-2026): connection mode -- Network (existing
+                // RS232-to-LAN converter) vs Direct USB (RS485-to-USB converter
+                // into the tablet's USB-C port). Whether USB mode actually works
+                // depends on hardware this app can't verify on its own (does the
+                // tablet support USB host/OTG mode, and is the converter's chip
+                // one of the four this app recognizes) -- Network stays the
+                // default so nothing changes unless this is deliberately switched.
+                Text("CONNECTION MODE", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = port, onValueChange = { port = it },
-                    label = { Text("USR Port (e.g. 8234)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ModeButton("🌐 Network (LAN)", selected = mode == "network", modifier = Modifier.weight(1f)) { mode = "network" }
+                    ModeButton("🔌 Direct USB", selected = mode == "usb_direct", modifier = Modifier.weight(1f)) { mode = "usb_direct" }
+                }
+
+                if (mode == "network") {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("SERIAL CONVERTER (RS232 → LAN)", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = ip, onValueChange = { ip = it },
+                        label = { Text("USR Serial Converter IP") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = port, onValueChange = { port = it },
+                        label = { Text("USR Port (e.g. 8234)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("DIRECT USB (RS485 → USB-C)", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Requires the tablet's USB-C port to support USB Host/OTG mode, and a converter using a recognized chipset (FTDI, CP210x, CH340, or PL2303). Not all tablets support this — check your device's spec sheet if it doesn't connect.",
+                        color = TextMuted, fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = baud, onValueChange = { baud = it },
+                        label = { Text("Baud Rate (e.g. 9600)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(4.dp))
                 Text("SERVER SYNC", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -467,7 +522,7 @@ private fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
-                    onClick = { onSave(ip, port, url, sn) },
+                    onClick = { onSave(ip, port, url, sn, mode, baud) },
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = HeaderColor),
                     shape = RoundedCornerShape(10.dp)

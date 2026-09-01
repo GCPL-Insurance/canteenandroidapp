@@ -11,6 +11,7 @@ import com.globalcalcium.canteenmonitor.data.Employee
 import com.globalcalcium.canteenmonitor.data.PunchEvent
 import com.globalcalcium.canteenmonitor.network.AdmsClient
 import com.globalcalcium.canteenmonitor.network.TcpPunchListener
+import com.globalcalcium.canteenmonitor.network.UsbSerialPunchListener
 import com.globalcalcium.canteenmonitor.ui.CanteenDashboard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,8 +20,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : ComponentActivity() {
-    private var tcpJob: Job? = null
+    private var punchJob: Job? = null
     private var admsClient: AdmsClient? = null
+    private var usbListener: UsbSerialPunchListener? = null
 
     // BUGFIX (Aug-2026): "the magic bug" -- everything (employee cache, punch
     // history, the running token counter) used to live ONLY in memory (a plain
@@ -46,63 +48,89 @@ class MainActivity : ComponentActivity() {
         var serialPort = prefs.getString("serial_port", "8234") ?: "8234"
         var serverUrl = prefs.getString("server_url", "http://10.253.27.106:8000") ?: "http://10.253.27.106:8000"
         var deviceSn = prefs.getString("device_sn", "GCPLCANTEEN01") ?: "GCPLCANTEEN01"
+        // FEATURE (Aug-2026): connection mode -- "network" (existing RS232-to-LAN
+        // converter, TCP) or "usb_direct" (RS485-to-USB converter straight into
+        // the tablet's USB-C port). Defaults to "network" -- the existing,
+        // already-confirmed-working setup -- so nothing changes for anyone who
+        // doesn't explicitly opt into USB mode.
+        var connectionMode = prefs.getString("connection_mode", "network") ?: "network"
+        var usbBaudRate = prefs.getString("usb_baud_rate", "9600") ?: "9600"
 
         val latestPunchState = mutableStateOf<PunchEvent?>(null)
         val punchHistoryState = mutableStateListOf<PunchEvent>()
         val totalCountState = mutableStateOf(0)
         var serial = 0
 
-        fun startListeners(ip: String, port: Int, sUrl: String, sn: String) {
-            tcpJob?.cancel()
-            admsClient?.stop()
+        // Shared by both connection modes -- a punch is a punch regardless of
+        // which transport it arrived through. Only the listener that produces
+        // this Map<String, String> differs between TCP and USB serial.
+        suspend fun handlePunchMap(map: Map<String, String>) {
+            val empId = map["User ID"] ?: return
+            val cachedEmp = employeeCache[empId] ?: withContext(Dispatchers.IO) {
+                db.employeeDao().getById(empId)?.also { employeeCache[empId] = it }
+            }
 
-            // Start eSSL Push Listener
+            val photoFile = File(filesDir, "photos/$empId.jpg")
+            val photoPath = if (photoFile.exists()) photoFile.absolutePath else cachedEmp?.photoPath
+
+            serial++
+            val event = PunchEvent(
+                serialNo = serial,
+                empId = empId,
+                name = cachedEmp?.name ?: (map["Name"] ?: "Employee $empId"),
+                department = cachedEmp?.department ?: "General",
+                mealType = map["Punch State"] ?: "BREAKFAST",
+                punchTime = map["Punch Time"] ?: "",
+                verificationMode = map["Verification Mode"] ?: "Face",
+                photoPath = photoPath
+            )
+            latestPunchState.value = event
+            punchHistoryState.add(0, event)
+            totalCountState.value = serial
+
+            withContext(Dispatchers.IO) { db.punchDao().insert(event) }
+        }
+
+        fun startListeners(ip: String, port: Int, sUrl: String, sn: String, mode: String, baud: Int) {
+            punchJob?.cancel()
+            admsClient?.stop()
+            usbListener?.stop()
+
+            // Start eSSL Push Listener (employee/photo sync -- unaffected by
+            // which punch-input transport is chosen)
             admsClient = AdmsClient(this, sUrl, sn) { emp ->
                 employeeCache[emp.empId] = emp
-                // BUGFIX: persist every synced employee to the database as it
-                // arrives, not just the in-memory cache -- this is what makes
-                // "push all employees" from the admin portal actually survive an
-                // app restart instead of needing to be re-pushed every time.
                 lifecycleScope.launch(Dispatchers.IO) {
                     db.employeeDao().upsert(emp)
                 }
             }.also { it.startSyncLoop(lifecycleScope) }
 
-            // Start Serial Listener
-            val tcpListener = TcpPunchListener(ip, port)
-            tcpJob = lifecycleScope.launch {
-                tcpListener.startListening().collect { map ->
-                    serial++
-                    val empId = map["User ID"] ?: ""
-                    val cachedEmp = employeeCache[empId] ?: withContext(Dispatchers.IO) {
-                        // In-memory cache is empty right after a restart until the
-                        // next sync poll arrives -- fall back to the database,
-                        // which already has whatever was synced before the app
-                        // was last closed.
-                        db.employeeDao().getById(empId)?.also { employeeCache[empId] = it }
+            // FEATURE (Aug-2026): pick ONE punch-input transport based on the
+            // chosen connection mode -- never both at once, to avoid the same
+            // physical punch being processed twice through two different paths.
+            punchJob = when (mode) {
+                "usb_direct" -> {
+                    val listener = UsbSerialPunchListener(this, baud)
+                    usbListener = listener
+                    lifecycleScope.launch {
+                        listener.startListening().collect { map ->
+                            val status = map["__status"]
+                            if (status != null) {
+                                // Connection/permission/error status, not a real
+                                // punch -- surfaced for diagnosing USB OTG /
+                                // chipset support issues, not treated as data.
+                                android.util.Log.i("UsbSerialPunchListener", "status: $status")
+                            } else {
+                                handlePunchMap(map)
+                            }
+                        }
                     }
-
-                    val photoFile = File(filesDir, "photos/$empId.jpg")
-                    val photoPath = if (photoFile.exists()) photoFile.absolutePath else cachedEmp?.photoPath
-
-                    val event = PunchEvent(
-                        serialNo = serial,
-                        empId = empId,
-                        name = cachedEmp?.name ?: (map["Name"] ?: "Employee $empId"),
-                        department = cachedEmp?.department ?: "General",
-                        mealType = map["Punch State"] ?: "BREAKFAST",
-                        punchTime = map["Punch Time"] ?: "",
-                        verificationMode = map["Verification Mode"] ?: "Face",
-                        photoPath = photoPath
-                    )
-                    latestPunchState.value = event
-                    punchHistoryState.add(0, event)
-                    totalCountState.value = serial
-
-                    // BUGFIX: persist every punch to the database as it happens --
-                    // this is the actual token history now, not just a
-                    // process-lifetime in-memory list.
-                    withContext(Dispatchers.IO) { db.punchDao().insert(event) }
+                }
+                else -> {
+                    val tcpListener = TcpPunchListener(ip, port)
+                    lifecycleScope.launch {
+                        tcpListener.startListening().collect { map -> handlePunchMap(map) }
+                    }
                 }
             }
         }
@@ -114,11 +142,6 @@ class MainActivity : ComponentActivity() {
             val (loadedEmployees, loadedPunches, resumeSerial) = withContext(Dispatchers.IO) {
                 val employees = db.employeeDao().getAll()
                 val punches = db.punchDao().getAll()
-                // Resume the token counter from the highest serialNo already
-                // stored, not always restart at 0 -- otherwise a restart mid-day
-                // would start reissuing token numbers that were already used
-                // earlier, which is confusing at best and a real duplicate-token
-                // problem at worst.
                 val resume = db.punchDao().maxSerialNo() ?: 0
                 Triple(employees, punches, resume)
             }
@@ -128,7 +151,10 @@ class MainActivity : ComponentActivity() {
             serial = resumeSerial
             totalCountState.value = loadedPunches.size
 
-            startListeners(serialIp, serialPort.toIntOrNull() ?: 8234, serverUrl, deviceSn)
+            startListeners(
+                serialIp, serialPort.toIntOrNull() ?: 8234, serverUrl, deviceSn,
+                connectionMode, usbBaudRate.toIntOrNull() ?: 9600
+            )
         }
 
         setContent {
@@ -140,15 +166,22 @@ class MainActivity : ComponentActivity() {
                 serialPort = serialPort,
                 serverUrl = serverUrl,
                 deviceSn = deviceSn,
+                connectionMode = connectionMode,
+                usbBaudRate = usbBaudRate,
                 database = db,
-                onSaveSettings = { newIp, newPort, newUrl, newSn ->
+                onSaveSettings = { newIp, newPort, newUrl, newSn, newMode, newBaud ->
                     prefs.edit()
                         .putString("serial_ip", newIp)
                         .putString("serial_port", newPort)
                         .putString("server_url", newUrl)
                         .putString("device_sn", newSn)
+                        .putString("connection_mode", newMode)
+                        .putString("usb_baud_rate", newBaud)
                         .apply()
-                    startListeners(newIp, newPort.toIntOrNull() ?: 8234, newUrl, newSn)
+                    startListeners(
+                        newIp, newPort.toIntOrNull() ?: 8234, newUrl, newSn,
+                        newMode, newBaud.toIntOrNull() ?: 9600
+                    )
                 }
             )
         }

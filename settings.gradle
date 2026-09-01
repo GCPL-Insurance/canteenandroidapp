@@ -10,6 +10,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // FEATURE (Aug-2026): needed to resolve usb-serial-for-android, which is
+        // published on JitPack rather than Maven Central. Must be added here, not
+        // in app/build.gradle -- FAIL_ON_PROJECT_REPOS above means Gradle rejects
+        // any repository declared at the module level.
+        maven { url 'https://jitpack.io' }
     }
 }
 rootProject.name = "CanteenMonitor"
