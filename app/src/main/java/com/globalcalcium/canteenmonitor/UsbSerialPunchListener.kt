@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -83,7 +84,20 @@ class UsbSerialPunchListener(
             }
         }
         val filter = IntentFilter(ACTION_USB_PERMISSION)
-        context.registerReceiver(permissionReceiver, filter)
+        // BUGFIX (Aug-2026): this was almost certainly the "app closes
+        // automatically" crash. Since Android 13 (API 33), registerReceiver() for
+        // a dynamically-registered receiver on a custom (non-system) action
+        // THROWS a SecurityException at runtime unless RECEIVER_EXPORTED or
+        // RECEIVER_NOT_EXPORTED is explicitly specified -- this app targets API
+        // 34, so that requirement applies. RECEIVER_NOT_EXPORTED is correct here
+        // (not EXPORTED) since this broadcast is only ever sent by this app to
+        // itself, for the USB permission callback -- no other app should be able
+        // to trigger it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(permissionReceiver, filter)
+        }
 
         if (usbManager.hasPermission(device)) {
             openAndListen(usbManager, driver) { parsed -> trySend(parsed) }
