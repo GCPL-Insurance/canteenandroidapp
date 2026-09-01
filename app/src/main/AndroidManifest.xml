@@ -5,6 +5,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- FEATURE (Aug-2026): this app is meant to run continuously as a kiosk-style
+         serving display, not behave like a typical app that can be freely
+         backgrounded. Many budget Android tablets/TV boxes aggressively kill apps
+         to save battery/memory even without an actual crash, separate from the
+         two crash fixes in UsbSerialPunchListener, this is a distinct, common
+         cause of "randomly stops receiving data" on exactly this kind of device.
+         REQUEST_IGNORE_BATTERY_OPTIMIZATIONS lets the app ask to be exempted. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- FEATURE (Aug-2026): direct USB serial input (RS485-to-USB converter into
          the tablet's USB-C port). required="false", the app must keep working
          normally on tablets that don't support USB host/OTG mode, this is purely

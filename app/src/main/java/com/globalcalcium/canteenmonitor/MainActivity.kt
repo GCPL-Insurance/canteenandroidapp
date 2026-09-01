@@ -1,7 +1,11 @@
 package com.globalcalcium.canteenmonitor
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
@@ -27,9 +31,31 @@ class MainActivity : ComponentActivity() {
     private lateinit var db: AppDatabase
     private val employeeCache = mutableMapOf<String, Employee>()
 
+    // FEATURE (Aug-2026): this app is meant to run continuously as a kiosk-style
+    // serving display -- request an exemption from battery optimization so a
+    // budget device's background-process killer doesn't stop it (a separate,
+    // common cause of "randomly stops working" distinct from the two real
+    // crashes fixed in UsbSerialPunchListener). Only requested once per install
+    // (checked against isIgnoringBatteryOptimizations); if the user dismisses
+    // the system prompt, this doesn't ask again every single launch.
+    private fun requestBatteryOptimizationExemption() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = AppDatabase.getInstance(this)
+        requestBatteryOptimizationExemption()
 
         val prefs = getSharedPreferences("canteen_settings", Context.MODE_PRIVATE)
 

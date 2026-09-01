@@ -102,8 +102,18 @@ class UsbSerialPunchListener(
         if (usbManager.hasPermission(device)) {
             openAndListen(usbManager, driver) { parsed -> trySend(parsed) }
         } else {
+            // BUGFIX (Aug-2026): a second, separate crash cause from the
+            // BroadcastReceiver export flag fixed earlier. Since Android 12 (API
+            // 31), a MUTABLE PendingIntent wrapping an IMPLICIT intent (no
+            // explicit target) is disallowed and throws IllegalArgumentException
+            // at runtime -- Intent(ACTION_USB_PERMISSION) had no explicit
+            // package/component set, which is exactly that disallowed pattern.
+            // setPackage() makes it explicit (restricted to this app only, which
+            // is what we want anyway -- this broadcast should never be
+            // receivable by any other app) without needing to reference a
+            // specific class.
             val permissionIntent = PendingIntent.getBroadcast(
-                context, 0, Intent(ACTION_USB_PERMISSION),
+                context, 0, Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
                 PendingIntent.FLAG_MUTABLE
             )
             usbManager.requestPermission(device, permissionIntent)
