@@ -75,7 +75,17 @@ class MobileSyncClient(
                                     verificationMode = if (t.optString("source", "device") == "manual") "Manual Token" else "Synced",
                                     photoPath = null,  // resolved from the local employee cache at display time, not carried in the sync payload itself
                                     isRejected = false,
-                                    source = t.optString("source", "cloud")
+                                    source = t.optString("source", "cloud"),
+                                    // FEATURE (Aug-2026): "counts should reset at
+                                    // midnight" -- deliberately the token's OWN
+                                    // issue date from the server (token_date), NOT
+                                    // "today" at sync time. A token issued
+                                    // yesterday during an offline stretch and only
+                                    // syncing down now must still count toward
+                                    // yesterday's total, not get miscounted into
+                                    // today's just because that's when it happened
+                                    // to arrive on this device.
+                                    dateStamp = t.optString("token_date", "")
                                 )
                                 trySend(event)
                             }

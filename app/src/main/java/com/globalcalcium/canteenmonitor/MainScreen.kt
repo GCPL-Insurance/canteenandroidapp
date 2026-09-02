@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,6 +63,17 @@ private val RowBg = Color(0xFFF8FAFC)
  */
 private enum class Screen { DASHBOARD, SETTINGS, HISTORY, ADMIN_LOGIN, DATABASE_VIEWER, RAW_DATA }
 
+/**
+ * BUGFIX (Aug-2026): MainActivity has its own todayDateStamp() but it's a
+ * file-private function in a different package (com.globalcalcium.canteenmonitor
+ * vs .ui here) -- not accessible from this file at all. Duplicated locally
+ * rather than made cross-file-visible, matching this codebase's existing pattern
+ * for small helpers (parsePunchBlock is similarly duplicated between
+ * TcpPunchListener and UsbSerialPunchListener rather than shared).
+ */
+private fun todayDateStamp(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
 @Composable
 fun CanteenDashboard(
     latestPunch: PunchEvent?,
@@ -81,12 +93,31 @@ fun CanteenDashboard(
 ) {
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
 
-    // FEATURE (Aug-2026): "verification overall count" — meal-wise breakdown, not
-    // just one grand total. Derived directly from punchHistory (mealType is
-    // already recorded per punch), no new data plumbing needed in MainActivity.
-    val breakfastCount = punchHistory.count { it.mealType.equals("BREAKFAST", ignoreCase = true) }
-    val lunchCount = punchHistory.count { it.mealType.equals("LUNCH", ignoreCase = true) }
-    val dinnerCount = punchHistory.count { it.mealType.equals("DINNER", ignoreCase = true) }
+    // FEATURE (Aug-2026): "count should reset at midnight, new day starts fresh"
+    // — filtered to today's dateStamp, not all-time cumulative history (which is
+    // still exactly what History/the database show, unchanged). Re-checked every
+    // minute via LaunchedEffect so the reset actually happens at midnight itself,
+    // not just whenever the next punch happens to arrive — a canteen sitting idle
+    // right at midnight would otherwise keep showing yesterday's numbers
+    // indefinitely until the next punch nudged a recomposition.
+    var currentDate by remember { mutableStateOf(todayDateStamp()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(60_000)
+            currentDate = todayDateStamp()
+        }
+    }
+
+    val todaysPunches = punchHistory.filter { it.dateStamp == currentDate }
+    val breakfastCount = todaysPunches.count { it.mealType.equals("BREAKFAST", ignoreCase = true) }
+    val lunchCount = todaysPunches.count { it.mealType.equals("LUNCH", ignoreCase = true) }
+    val dinnerCount = todaysPunches.count { it.mealType.equals("DINNER", ignoreCase = true) }
+    // BUGFIX (Aug-2026): PUNCH TOTAL in the header used to be the all-time
+    // cumulative total while the meal breakdown below it was daily-only, which
+    // would show two numbers that visibly don't add up (e.g. "Total: 5000" next
+    // to "Breakfast 12 / Lunch 8 / Dinner 3"). Deriving it the same way keeps
+    // both halves of the dashboard consistent with each other.
+    val todayTotalCount = breakfastCount + lunchCount + dinnerCount
 
     // FEATURE (Aug-2026): "show invalid/rejected verification... popup with red"
     // — shown as a global overlay regardless of which screen is currently open,
@@ -132,7 +163,7 @@ fun CanteenDashboard(
             Screen.DASHBOARD -> DashboardScreen(
                 latestPunch = latestPunch,
                 punchHistory = punchHistory,
-                totalCount = totalCount,
+                totalCount = todayTotalCount,
                 breakfastCount = breakfastCount,
                 lunchCount = lunchCount,
                 dinnerCount = dinnerCount,
@@ -260,7 +291,21 @@ private fun DashboardScreen(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            // BUGFIX (Aug-2026): this row has grown to 5 buttons plus a text
+            // column across several rounds (History, Raw Data, Admin, Settings,
+            // Focus added one at a time) without ever checking whether they all
+            // actually fit within the header's width. On anything narrower than
+            // a wide tablet, the later buttons -- Focus being the very last one
+            // added -- could silently overflow off-screen with no visual
+            // indication anything was cut off, which is almost certainly why it
+            // wasn't visible. horizontalScroll guarantees every button stays
+            // reachable regardless of screen width, same reasoning as the
+            // Settings screen scroll fix from earlier.
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Column(horizontalAlignment = Alignment.End) {
                     Text("PUNCH TOTAL", color = Color(0xFFCCFBF1), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     Text("$totalCount", color = Color(0xFF6EE7B7), fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
@@ -933,7 +978,7 @@ private fun DatabaseViewerScreen(database: AppDatabase, onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Synced Employees (${employees.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { showPhotoCapture = true },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),

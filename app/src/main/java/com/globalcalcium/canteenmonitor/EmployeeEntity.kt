@@ -29,6 +29,16 @@ data class Employee(
  * down from the cloud (e.g. a manual vendor token issued from the admin
  * portal) — both are real defaults so this doesn't require a destructive
  * migration for anyone upgrading from before these fields existed.
+ *
+ * FEATURE (Aug-2026): dateStamp — "counts should reset at midnight, new day
+ * starts fresh". Recorded once at creation time (yyyy-MM-dd, this device's own
+ * local clock), not derived by parsing punchTime — punchTime's actual format
+ * differs between a locally-scanned punch (whatever the device's own serial
+ * output uses) and a cloud-synced token (the server's issued_at timestamp),
+ * so it isn't a reliable thing to parse a date back out of. History still
+ * shows everything regardless of date — this field is used only for the
+ * dashboard's daily meal-count totals, not for what's stored or what History
+ * displays.
  */
 @Entity(tableName = "punch_events")
 data class PunchEvent(
@@ -43,5 +53,6 @@ data class PunchEvent(
     val photoPath: String?,
     val isRejected: Boolean = false,
     val rejectionReason: String? = null,
-    val source: String = "device"
+    val source: String = "device",
+    val dateStamp: String = ""
 )

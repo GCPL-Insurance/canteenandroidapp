@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * backing the app going forward — see MainActivity for how it's loaded on startup
  * and written to as data arrives.
  */
-@Database(entities = [Employee::class, PunchEvent::class], version = 2, exportSchema = false)
+@Database(entities = [Employee::class, PunchEvent::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun employeeDao(): EmployeeDao
     abstract fun punchDao(): PunchDao
@@ -37,13 +37,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // FEATURE (Aug-2026): "counts should reset at midnight" — adds dateStamp
+        // for reliable daily filtering on the dashboard. Existing rows get an
+        // empty dateStamp (can't reliably back-derive their real date from
+        // punchTime, whose format differs by source), meaning they simply won't
+        // match "today" and won't count toward the daily totals going forward.
+        // The only imperfect case is punches from EARLIER THE SAME DAY this
+        // update happens to install — those won't count toward today either,
+        // since their dateStamp is blank rather than actually today's date. That
+        // is a one-time, self-correcting quirk limited to whichever single day
+        // the app happens to update on; every day after this is exact.
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE punch_events ADD COLUMN dateStamp TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "canteen_db"
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
         }
     }

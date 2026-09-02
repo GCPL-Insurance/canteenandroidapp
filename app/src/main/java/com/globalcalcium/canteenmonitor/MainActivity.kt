@@ -30,6 +30,15 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
+/**
+ * FEATURE (Aug-2026): "counts should reset at midnight" — this device's own
+ * local-clock date, in a sortable/comparable yyyy-MM-dd form. Deliberately not
+ * derived from any punch's own punchTime string, since that format differs
+ * between a locally-scanned punch and a cloud-synced token.
+ */
+private fun todayDateStamp(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
 class MainActivity : ComponentActivity() {
     private var punchJob: Job? = null
     private var admsClient: AdmsClient? = null
@@ -202,7 +211,12 @@ class MainActivity : ComponentActivity() {
                 verificationMode = map["Verification Mode"] ?: "Face",
                 photoPath = photoPath,
                 isRejected = isRejected,
-                rejectionReason = rejectionReason
+                rejectionReason = rejectionReason,
+                // FEATURE (Aug-2026): "counts should reset at midnight" — recorded
+                // using this device's own local clock at the moment of the punch,
+                // not derived from punchTime (whose format isn't reliable to
+                // parse a date back out of).
+                dateStamp = todayDateStamp()
             )
 
             // FEATURE (Aug-2026): "voice accepted/rejected... his name also
