@@ -1185,7 +1185,14 @@ private fun AdminPhotoCaptureScreen(onBack: () -> Unit) {
                             // which would otherwise crash the whole app rather
                             // than just fail this one feature gracefully.
                             try {
-                                cameraLauncher.launch()
+                                // BUGFIX (Aug-2026): TakePicturePreview's contract
+                                // is typed <Void?, Bitmap?> -- it needs no actual
+                                // input data, but Kotlin's type system still
+                                // requires an explicit argument matching that
+                                // type, which can only ever be null. launch()
+                                // with no argument at all doesn't compile against
+                                // this specific contract.
+                                cameraLauncher.launch(null)
                             } catch (e: android.content.ActivityNotFoundException) {
                                 statusMessage = "No camera app available on this device"
                             }
