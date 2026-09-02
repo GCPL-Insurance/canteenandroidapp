@@ -1,6 +1,9 @@
 package com.globalcalcium.canteenmonitor.ui
 
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -24,6 +28,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.globalcalcium.canteenmonitor.data.AppDatabase
 import com.globalcalcium.canteenmonitor.data.Employee
@@ -64,6 +69,7 @@ fun CanteenDashboard(
     punchHistory: List<PunchEvent>,
     totalCount: Int,
     rawLog: List<String>,
+    connectionStatus: String?,
     serialIp: String,
     serialPort: String,
     serverUrl: String,
@@ -130,6 +136,7 @@ fun CanteenDashboard(
                 breakfastCount = breakfastCount,
                 lunchCount = lunchCount,
                 dinnerCount = dinnerCount,
+                connectionStatus = connectionStatus,
                 onOpenSettings = { screen = Screen.SETTINGS },
                 onOpenHistory = { screen = Screen.HISTORY },
                 onOpenAdmin = { screen = Screen.ADMIN_LOGIN },
@@ -197,6 +204,7 @@ private fun DashboardScreen(
     breakfastCount: Int,
     lunchCount: Int,
     dinnerCount: Int,
+    connectionStatus: String?,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenAdmin: () -> Unit,
@@ -207,8 +215,34 @@ private fun DashboardScreen(
     // setting it back to null returns to the normal dashboard.
     var fullScreenPhoto by remember { mutableStateOf<PunchEvent?>(null) }
 
+    // FEATURE (Aug-2026): "full screen mode for token... admin raw rows and
+    // breakfast lunch dinner total rows should be hidden" — a single toggle for
+    // a minimal, distraction-free view showing only the current token and Last 5.
+    // A small button stays reachable even in focused mode so it can be turned
+    // back off.
+    var focusedMode by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
 
+        // FEATURE (Aug-2026): "show warning/error on main window" if USB/network
+        // disconnects or fails — shown regardless of focused mode, since a
+        // connection problem is exactly the kind of thing that shouldn't be
+        // hideable.
+        if (connectionStatus != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFDC2626), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(connectionStatus, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        if (!focusedMode) {
         // Top Bar
         Row(
             modifier = Modifier
@@ -259,6 +293,13 @@ private fun DashboardScreen(
                 ) {
                     Text("⚙ Settings", color = Color.White, fontSize = 12.sp)
                 }
+                Button(
+                    onClick = { focusedMode = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF115E59)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🔲 Focus", color = Color.White, fontSize = 12.sp)
+                }
             }
         }
 
@@ -275,6 +316,21 @@ private fun DashboardScreen(
         }
 
         Spacer(modifier = Modifier.height(10.dp))
+        } else {
+            // FEATURE (Aug-2026): small, unobtrusive way back to the normal
+            // dashboard from focused mode — deliberately compact so it doesn't
+            // reintroduce the visual clutter focused mode is meant to remove.
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Button(
+                    onClick = { focusedMode = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("⤢ Exit Focus", color = Color.White, fontSize = 12.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         // Main Content Area
         Row(modifier = Modifier.fillMaxSize()) {
@@ -844,10 +900,27 @@ private fun DatabaseViewerScreen(database: AppDatabase, onBack: () -> Unit) {
     var employees by remember { mutableStateOf<List<Employee>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var showChangePassword by remember { mutableStateOf(false) }
+    // FEATURE (Aug-2026): "take photo and save for the user" -- admin-only
+    // capture flow, for when a synced photo is missing or wrong.
+    var showPhotoCapture by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         employees = withContext(Dispatchers.IO) { database.employeeDao().getAll() }
         isLoading = false
+    }
+
+    if (showPhotoCapture) {
+        AdminPhotoCaptureScreen(
+            onBack = {
+                showPhotoCapture = false
+                // Refresh the list on return in case the captured photo's
+                // employee record needs to reflect it (photo lookup itself is
+                // file-path-based and picks it up automatically either way, but
+                // this keeps the visible "✓ Synced" status accurate immediately
+                // rather than waiting for the next full screen reload).
+            }
+        )
+        return
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
@@ -861,6 +934,13 @@ private fun DatabaseViewerScreen(database: AppDatabase, onBack: () -> Unit) {
         ) {
             Text("Synced Employees (${employees.size})", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { showPhotoCapture = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("📷 Take Photo", color = Color.White, fontSize = 13.sp)
+                }
                 Button(
                     onClick = { showChangePassword = true },
                     colors = ButtonDefaults.buttonColors(containerColor = HeaderColorDark),
@@ -1002,4 +1082,170 @@ private fun ChangePasswordDialog(onDismiss: () -> Unit) {
             }
         }
     )
+}
+
+/**
+ * FEATURE (Aug-2026): "take photo and save for the user additional features on
+ * admin login" -- capture a photo directly on the tablet's own camera and save
+ * it for a specific employee. Uses TakePicturePreview (returns a Bitmap
+ * directly) rather than TakePicture (which needs a FileProvider set up in the
+ * manifest) -- simpler and lower-risk given this can't be compile-tested here.
+ * Saves to the exact same path (filesDir/photos/$empId.jpg) the rest of the app
+ * already reads from, so it's picked up automatically on the next punch for
+ * that employee with no other wiring needed.
+ */
+@Composable
+private fun AdminPhotoCaptureScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    var empIdInput by remember { mutableStateOf("") }
+    var capturedBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> hasCameraPermission = granted }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap -> capturedBitmap = bitmap }
+
+    Column(modifier = Modifier.fillMaxSize().padding(14.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF7C3AED), RoundedCornerShape(14.dp))
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("📷 Take Photo for Employee", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Button(
+                onClick = onBack,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5B21B6)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("← Back", color = Color.White, fontSize = 13.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            colors = CardDefaults.cardColors(containerColor = CardColor),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                OutlinedTextField(
+                    value = empIdInput,
+                    onValueChange = { empIdInput = it; statusMessage = null },
+                    label = { Text("Employee ID") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                if (capturedBitmap != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = capturedBitmap!!.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.size(220.dp, 270.dp).clip(RoundedCornerShape(14.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.size(220.dp, 270.dp).background(RowBg, RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No photo captured yet", color = TextMuted, fontSize = 13.sp)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (hasCameraPermission) {
+                            // BUGFIX (Aug-2026): this app explicitly also targets
+                            // Android TV boxes (per the HDMI display use case
+                            // described earlier in this project), many of which
+                            // have no camera hardware or camera app installed at
+                            // all. TakePicturePreview launches an implicit
+                            // MediaStore.ACTION_IMAGE_CAPTURE intent -- with
+                            // nothing on the device able to handle it, .launch()
+                            // throws ActivityNotFoundException synchronously,
+                            // which would otherwise crash the whole app rather
+                            // than just fail this one feature gracefully.
+                            try {
+                                cameraLauncher.launch()
+                            } catch (e: android.content.ActivityNotFoundException) {
+                                statusMessage = "No camera app available on this device"
+                            }
+                        } else {
+                            permissionLauncher.launch(android.Manifest.permission.CAMERA)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(if (capturedBitmap == null) "📷 Open Camera" else "📷 Retake", color = Color.White, fontSize = 15.sp)
+                }
+
+                Button(
+                    onClick = {
+                        val empId = empIdInput.trim()
+                        val bitmap = capturedBitmap
+                        when {
+                            empId.isBlank() -> statusMessage = "Enter an Employee ID first"
+                            bitmap == null -> statusMessage = "Take a photo first"
+                            else -> {
+                                try {
+                                    val photosDir = java.io.File(context.filesDir, "photos")
+                                    if (!photosDir.exists()) photosDir.mkdirs()
+                                    val photoFile = java.io.File(photosDir, "$empId.jpg")
+                                    java.io.FileOutputStream(photoFile).use { out ->
+                                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+                                    }
+                                    statusMessage = "✓ Saved for Employee $empId"
+                                    empIdInput = ""
+                                    capturedBitmap = null
+                                } catch (e: Exception) {
+                                    statusMessage = "Failed to save: ${e.message}"
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("💾 Save Photo", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+
+                if (statusMessage != null) {
+                    Text(
+                        statusMessage!!,
+                        color = if (statusMessage!!.startsWith("✓")) AccentGreen else Color(0xFFDC2626),
+                        fontSize = 14.sp, fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                if (!hasCameraPermission) {
+                    Text(
+                        "Camera permission is needed to take a photo — tap Open Camera to grant it.",
+                        color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+    }
 }

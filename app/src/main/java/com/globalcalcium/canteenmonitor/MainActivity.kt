@@ -95,7 +95,18 @@ class MainActivity : ComponentActivity() {
         // silently rather than crashing (checked via the init status callback).
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
+                // FEATURE (Aug-2026): "pronounced in Indian slang" -- switched to
+                // Indian English locale, which gives noticeably more natural
+                // pronunciation of Indian names than US English. Falls back
+                // gracefully to whatever's available if this exact locale isn't
+                // installed on a given device.
+                val indianEnglish = Locale("en", "IN")
+                tts?.language = if (tts?.isLanguageAvailable(indianEnglish) == TextToSpeech.LANG_AVAILABLE ||
+                                    tts?.isLanguageAvailable(indianEnglish) == TextToSpeech.LANG_COUNTRY_AVAILABLE) {
+                    indianEnglish
+                } else {
+                    Locale.US
+                }
             }
         }
 
@@ -137,9 +148,32 @@ class MainActivity : ComponentActivity() {
             rawLogState.add(0, "$ts  $line")
             if (rawLogState.size > 500) rawLogState.removeAt(rawLogState.size - 1)
         }
+        // FEATURE (Aug-2026): "if usb disconnected or failed to connect show the
+        // warning/error on main window" -- this is the current connection state,
+        // shown as a banner directly on the dashboard, not something you have to
+        // go find in Raw Data to notice. null means "connected / no problem to
+        // report right now".
+        val connectionStatusState = mutableStateOf<String?>(null)
         val punchHistoryState = mutableStateListOf<PunchEvent>()
         val totalCountState = mutableStateOf(0)
         var serial = 0
+
+        // FEATURE (Aug-2026): translates the internal status codes from either
+        // listener into a clear, human-readable warning for the dashboard banner
+        // -- an operator shouldn't need to know what "usb_permission_denied"
+        // means internally to understand there's a problem.
+        fun statusToWarning(status: String, connectionLabel: String): String = when {
+            status == "no_compatible_usb_device_found" -> "⚠ No USB serial device detected — check the converter is plugged in"
+            status == "usb_permission_denied" -> "⚠ USB permission denied — reconnect and allow access when prompted"
+            status == "usb_open_failed" -> "⚠ Failed to open USB connection"
+            status.startsWith("usb_read_error") -> "⚠ USB connection error — device may have disconnected"
+            status.startsWith("usb_connect_exception") -> "⚠ USB connection failed"
+            status == "usb_device_detached" -> "⚠ USB cable disconnected — plug it back in to reconnect automatically"
+            status == "usb_device_attached_reconnecting" -> "⏳ USB device detected, reconnecting…"
+            status == "disconnected" -> "⚠ $connectionLabel disconnected — reconnecting…"
+            status.startsWith("connection_failed") -> "⚠ $connectionLabel connection failed — retrying…"
+            else -> "⚠ $connectionLabel connection issue: $status"
+        }
 
         suspend fun handlePunchMap(map: Map<String, String>) {
             val empId = map["User ID"] ?: return
@@ -171,11 +205,13 @@ class MainActivity : ComponentActivity() {
                 rejectionReason = rejectionReason
             )
 
-            // FEATURE (Aug-2026): "voice accepted/rejected" -- speaks the outcome
-            // aloud as it happens. Uses QUEUE_FLUSH so a rapid second punch
-            // doesn't queue up a backlog of announcements playing late.
+            // FEATURE (Aug-2026): "voice accepted/rejected... his name also
+            // pronounced" -- speaks the person's name for a successful punch,
+            // not just the bare outcome. Rejections deliberately stay nameless
+            // (name resolution can be unreliable exactly when verification
+            // failed) and just announce the reason instead.
             tts?.speak(
-                if (isRejected) "Access Denied${rejectionReason?.let { ", $it" } ?: ""}" else "Access Granted",
+                if (isRejected) "Access Denied${rejectionReason?.let { ", $it" } ?: ""}" else "Access Granted, ${event.name}",
                 TextToSpeech.QUEUE_FLUSH, null, null
             )
 
@@ -240,7 +276,9 @@ class MainActivity : ComponentActivity() {
                         listener.startListening().collect { map ->
                             when {
                                 map.containsKey("__status") -> {
-                                    logRaw("[STATUS] ${map["__status"]}")
+                                    val status = map["__status"] ?: ""
+                                    logRaw("[STATUS] $status")
+                                    connectionStatusState.value = if (status == "connected") null else statusToWarning(status, "USB")
                                 }
                                 map.containsKey("__raw") -> {
                                     logRaw("[RAW] ${map["__raw"]?.replace("\n", "\\n")}")
@@ -254,10 +292,16 @@ class MainActivity : ComponentActivity() {
                     val tcpListener = TcpPunchListener(ip, port)
                     lifecycleScope.launch {
                         tcpListener.startListening().collect { map ->
-                            if (map.containsKey("__raw")) {
-                                logRaw("[RAW] ${map["__raw"]?.replace("\n", "\\n")}")
-                            } else {
-                                handlePunchMap(map)
+                            when {
+                                map.containsKey("__status") -> {
+                                    val status = map["__status"] ?: ""
+                                    logRaw("[STATUS] $status")
+                                    connectionStatusState.value = if (status == "connected") null else statusToWarning(status, "Network")
+                                }
+                                map.containsKey("__raw") -> {
+                                    logRaw("[RAW] ${map["__raw"]?.replace("\n", "\\n")}")
+                                }
+                                else -> handlePunchMap(map)
                             }
                         }
                     }
@@ -291,6 +335,7 @@ class MainActivity : ComponentActivity() {
                 punchHistory = punchHistoryState,
                 totalCount = totalCountState.value,
                 rawLog = rawLogState,
+                connectionStatus = connectionStatusState.value,
                 serialIp = serialIp,
                 serialPort = serialPort,
                 serverUrl = serverUrl,

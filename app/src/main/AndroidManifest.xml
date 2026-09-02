@@ -5,6 +5,14 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- FEATURE (Aug-2026): admin photo capture, take a photo on the tablet's
+         own camera and save it directly for an employee, for cases where the
+         synced photo is missing or wrong. Dangerous permission, requested at
+         runtime (see AdminPhotoCaptureScreen), this declaration alone doesn't
+         grant it. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <!-- FEATURE (Aug-2026): this app is meant to run continuously as a kiosk-style
          serving display, not behave like a typical app that can be freely
          backgrounded. Many budget Android tablets/TV boxes aggressively kill apps

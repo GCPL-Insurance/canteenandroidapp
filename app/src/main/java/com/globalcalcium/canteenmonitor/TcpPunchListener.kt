@@ -18,6 +18,11 @@ class TcpPunchListener(private val host: String, private val port: Int) {
             try {
                 socket = Socket()
                 socket.connect(InetSocketAddress(host, port), 5000)
+                // FEATURE (Aug-2026): "show warning/error on main window" if the
+                // connection fails or drops -- mirrors UsbSerialPunchListener's
+                // __status mechanism so the same banner works for either
+                // connection mode.
+                emit(mapOf("__status" to "connected"))
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
                 val buffer = StringBuilder()
 
@@ -43,7 +48,9 @@ class TcpPunchListener(private val host: String, private val port: Int) {
                         buffer.clear()
                     }
                 }
+                emit(mapOf("__status" to "disconnected"))
             } catch (e: Exception) {
+                emit(mapOf("__status" to "connection_failed: ${e.message}"))
                 e.printStackTrace()
             } finally {
                 try { socket?.close() } catch (_: Exception) {}

@@ -18,7 +18,14 @@ class AdmsClient(
 ) {
     private var isRunning = true
 
-    fun startSyncLoop(scope: CoroutineScope, intervalSeconds: Long = 10) {
+    // BUGFIX (Aug-2026): "photo sync was too making too long" -- at the old 10
+    // second default, syncing a few hundred employees' photos (one command
+    // delivered per poll, matching how every device in this deployment is
+    // dispatched) could take the better part of an hour. 3 seconds matches how
+    // frequently real biometric devices in this deployment already poll the same
+    // server, so this isn't introducing a new load pattern, just catching this
+    // one client up to the same cadence -- roughly 3x faster end-to-end.
+    fun startSyncLoop(scope: CoroutineScope, intervalSeconds: Long = 3) {
         scope.launch(Dispatchers.IO) {
             while (isRunning) {
                 try {
